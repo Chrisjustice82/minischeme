@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#0f1724">
+<title>MiniScheme — paint scheme previews for miniatures</title>
+<style>
+  :root {
+    --bg: #0f1724;
+    --bg-2: #162033;
+    --panel: #1b2740;
+    --panel-2: #243253;
+    --ink: #e8ecf4;
+    --ink-dim: #9aa6bf;
+    --accent: #6aa6ff;
+    --accent-2: #9fc4ff;
+    --gold: #d4a24e;
+    --red: #c44;
+    --green: #4ab37a;
+    --border: #2a3957;
+    --radius: 12px;
+    --shadow: 0 4px 20px rgba(0,0,0,0.3);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; -webkit-font-smoothing: antialiased; }
+  body { min-height: 100vh; display: flex; flex-direction: column; }
+
+  header {
+    padding: 14px 16px;
+    background: linear-gradient(180deg, var(--bg-2), var(--bg));
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  header .logo { width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, var(--gold), var(--red)); display: flex; align-items: center; justify-content: center; font-weight: 700; color: #111; font-size: 14px; }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: 0.2px; }
+  header .sub { color: var(--ink-dim); font-size: 12px; }
+
+  main { flex: 1; padding: 16px; max-width: 1100px; margin: 0 auto; width: 100%; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow);
+  }
+
+  .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--ink-dim); margin: 0 0 10px; font-weight: 600; }
+
+  /* Upload zone */
+  .upload {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.15s;
+    background: rgba(255,255,255,0.02);
+  }
+  .upload:hover, .upload.drag { border-color: var(--accent); background: rgba(106,166,255,0.08); }
+  .upload input { display: none; }
+  .upload .icon { font-size: 32px; margin-bottom: 8px; }
+  .upload .hint { color: var(--ink-dim); font-size: 13px; margin-top: 4px; }
+
+  .preview {
+    position: relative;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #000;
+    max-height: 400px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .preview img { max-width: 100%; max-height: 400px; object-fit: contain; display: block; }
+  .preview .clear {
+    position: absolute; top: 8px; right: 8px;
+    background: rgba(0,0,0,0.6); color: white; border: none; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-size: 16px;
+  }
+
+  /* Brief input */
+  textarea {
+    width: 100%;
+    background: var(--bg-2);
+    color: var(--ink);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    font-size: 15px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 70px;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+
+  .engine-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .engine-row label { font-size: 12px; color: var(--ink-dim); display: flex; align-items: center; gap: 4px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 20px; padding: 6px 12px; cursor: pointer; }
+  .engine-row input[type=radio] { accent-color: var(--accent); }
+
+  /* Buttons */
+  .btn {
+    background: var(--accent);
+    color: #0b1322;
+    border: none;
+    border-radius: var(--radius);
+    padding: 12px 18px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    width: 100%;
+    margin-top: 12px;
+  }
+  .btn:hover:not(:disabled) { background: var(--accent-2); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn.secondary { background: var(--panel-2); color: var(--ink); }
+  .btn.secondary:hover:not(:disabled) { background: var(--border); }
+
+  /* Results grid */
+  .results { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  @media (min-width: 720px) {
+    .results { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  .scheme {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .scheme .img-wrap {
+    background: #000;
+    aspect-ratio: 3/4;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .scheme .img-wrap img { width: 100%; height: 100%; object-fit: contain; }
+  .scheme .img-wrap .placeholder { color: var(--ink-dim); font-size: 13px; text-align: center; padding: 20px; }
+  .scheme .img-wrap .spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .scheme .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .scheme h3 { margin: 0; font-size: 16px; }
+  .scheme .concept { color: var(--ink-dim); font-size: 13px; line-height: 1.4; }
+
+  .palette { display: flex; gap: 4px; flex-wrap: wrap; }
+  .swatch { width: 28px; height: 28px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); position: relative; }
+  .swatch:hover::after {
+    content: attr(data-label);
+    position: absolute; bottom: -28px; left: 50%; transform: translateX(-50%);
+    background: #000; color: white; font-size: 11px; padding: 3px 6px; border-radius: 4px; white-space: nowrap; z-index: 5;
+  }
+
+  details.recipe { background: var(--bg-2); border-radius: 8px; padding: 10px 12px; border: 1px solid var(--border); }
+  details.recipe summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--accent-2); list-style: none; }
+  details.recipe summary::-webkit-details-marker { display: none; }
+  details.recipe summary::after { content: " ▸"; }
+  details.recipe[open] summary::after { content: " ▾"; }
+  details.recipe table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  details.recipe th { text-align: left; color: var(--ink-dim); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  details.recipe td { padding: 5px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); vertical-align: top; }
+  details.recipe td.part { font-weight: 600; color: var(--ink); white-space: nowrap; }
+
+  .scheme-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .scheme-actions button { flex: 1; background: var(--panel-2); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 12px; cursor: pointer; }
+  .scheme-actions button:hover:not(:disabled) { background: var(--border); }
+  .scheme-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .status { color: var(--ink-dim); font-size: 13px; text-align: center; padding: 12px; }
+  .error { color: #ff8a8a; background: rgba(255,80,80,0.1); border: 1px solid rgba(255,80,80,0.3); padding: 10px; border-radius: 8px; font-size: 13px; margin-top: 8px; }
+
+  .empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--ink-dim);
+  }
+  .empty .big { font-size: 48px; margin-bottom: 8px; }
+
+  footer { text-align: center; color: var(--ink-dim); font-size: 11px; padding: 20px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">MS</div>
+  <div>
+    <h1>MiniScheme</h1>
+    <div class="sub">AI paint scheme previews for miniatures</div>
+  </div>
+</header>
+
+<main>
+
+  <!-- Step 1: Upload -->
+  <div class="card">
+    <div class="section-title">1. Your miniature</div>
+    <label class="upload" id="uploadZone">
+      <input type="file" id="fileInput" accept="image/*" capture="environment">
+      <div class="icon">📷</div>
+      <div><strong>Tap to take a photo or upload</strong></div>
+      <div class="hint">JPG, PNG or WEBP. Plain background works best.</div>
+    </label>
+    <div id="previewWrap" style="display:none; margin-top:12px;">
+      <div class="preview">
+        <img id="previewImg" alt="Your miniature">
+        <button class="clear" id="clearBtn" title="Remove">×</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 2: Brief -->
+  <div class="card">
+    <div class="section-title">2. What are you going for?</div>
+    <textarea id="brief" placeholder="e.g. 'Autumnal Stormcast, warm tones but still noble' — or leave blank for three strong suggestions."></textarea>
+    <div class="engine-row" id="engineRow">
+      <label><input type="radio" name="engine" value="gemini" checked> Gemini</label>
+      <label><input type="radio" name="engine" value="replicate"> Flux Kontext</label>
+      <label><input type="radio" name="engine" value="openai"> gpt-image-1</label>
+    </div>
+    <button class="btn" id="goBtn" disabled>Generate 3 schemes</button>
+    <div id="errorBox"></div>
+  </div>
+
+  <!-- Step 3: Results -->
+  <div id="resultsWrap" style="display:none;">
+    <div class="section-title" style="margin-left: 4px;">3. Your schemes</div>
+    <div id="statusLine" class="status" style="display:none;"></div>
+    <div class="results" id="results"></div>
+  </div>
+
+  <div id="emptyState" class="empty">
+    <div class="big">🎨</div>
+    <div>Upload a photo of your unpainted or primed miniature, describe the vibe you want, and we'll generate three full paint schemes — with previews and recipes.</div>
+  </div>
+
+</main>
+
+<footer>MiniScheme · single-file app · pluggable image engines</footer>
+
+<script>
+const state = {
+  imageBase64: null,
+  imageMediaType: null,
+  schemes: [],
+  brief: ''
+};
+
+const $ = (id) => document.getElementById(id);
+
+// ---------- File handling ----------
+
+$('fileInput').addEventListener('change', (e) => {
+  const file = e.target.files?.[0];
+  if (file) loadImage(file);
+});
+
+['dragover', 'drop'].forEach(evt => {
+  $('uploadZone').addEventListener(evt, (e) => { e.preventDefault(); });
+});
+$('uploadZone').addEventListener('dragover', () => $('uploadZone').classList.add('drag'));
+$('uploadZone').addEventListener('dragleave', () => $('uploadZone').classList.remove('drag'));
+$('uploadZone').addEventListener('drop', (e) => {
+  $('uploadZone').classList.remove('drag');
+  const file = e.dataTransfer.files?.[0];
+  if (file) loadImage(file);
+});
+
+$('clearBtn').addEventListener('click', () => {
+  state.imageBase64 = null;
+  state.imageMediaType = null;
+  $('previewImg').src = '';
+  $('previewWrap').style.display = 'none';
+  $('fileInput').value = '';
+  $('uploadZone').style.display = 'block';
+  updateGoBtn();
+});
+
+async function loadImage(file) {
+  // Downscale to keep payloads small. 1024 is plenty for vision models
+  // to read sculpt detail, and keeps the base64 payload well under 1MB.
+  const MAX = 1024;
+  const img = await fileToImage(file);
+  let { width, height } = img;
+  let scale = 1;
+  if (width > MAX || height > MAX) {
+    scale = Math.min(MAX / width, MAX / height);
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  const base64 = dataUrl.split(',')[1];
+
+  state.imageBase64 = base64;
+  state.imageMediaType = 'image/jpeg';
+
+  $('previewImg').src = dataUrl;
+  $('previewWrap').style.display = 'block';
+  $('uploadZone').style.display = 'none';
+  updateGoBtn();
+}
+
+function fileToImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// ---------- Go ----------
+
+$('brief').addEventListener('input', (e) => { state.brief = e.target.value; });
+function selectedEngine() {
+  return document.querySelector('input[name=engine]:checked').value;
+}
+function updateGoBtn() {
+  $('goBtn').disabled = !state.imageBase64;
+}
+
+$('goBtn').addEventListener('click', onGo);
+
+function uuid() {
+  // Prefer crypto.randomUUID when available (all modern browsers), fall back otherwise
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+let pollTimer = null;
+
+async function onGo() {
+  $('errorBox').innerHTML = '';
+  $('goBtn').disabled = true;
+  $('goBtn').textContent = 'Starting…';
+  $('emptyState').style.display = 'none';
+  $('resultsWrap').style.display = 'block';
+
+  // Stop any previous poll
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+
+  // Render placeholders
+  state.schemes = [];
+  setStatus('Submitting job…');
+  renderResults([{ loading: true }, { loading: true }, { loading: true }]);
+
+  const jobId = uuid();
+  const engine = selectedEngine();
+
+  try {
+    // Kick off the background function. It returns 202 immediately.
+    const kickResp = await fetch('/.netlify/functions/scheme-background', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobId,
+        imageBase64: state.imageBase64,
+        imageMediaType: state.imageMediaType,
+        brief: state.brief,
+        engine
+      })
+    });
+
+    if (kickResp.status !== 202 && !kickResp.ok) {
+      const t = await kickResp.text();
+      throw new Error('Could not start job: ' + t.slice(0, 300));
+    }
+
+    $('goBtn').textContent = 'Working…';
+    pollJob(jobId);
+
+  } catch (err) {
+    console.error(err);
+    $('errorBox').innerHTML = '<div class="error">' + escapeHtml(err.message) + '</div>';
+    $('goBtn').textContent = 'Try again';
+    $('goBtn').disabled = false;
+    setStatus('');
+  }
+}
+
+function setStatus(text) {
+  let el = $('statusLine');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.display = text ? 'block' : 'none';
+}
+
+async function pollJob(jobId) {
+  const startedAt = Date.now();
+  const deadline = startedAt + 10 * 60 * 1000; // 10 min hard cap client-side
+  let sawAnyStatus = false;
+
+  const tick = async () => {
+    if (Date.now() > deadline) {
+      $('errorBox').innerHTML = '<div class="error">Timed out waiting for results. Check Netlify function logs for scheme-background to see what happened.</div>';
+      $('goBtn').textContent = 'Try again';
+      $('goBtn').disabled = false;
+      setStatus('');
+      return;
+    }
+    try {
+      const resp = await fetch(`/.netlify/functions/job-status?id=${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+      if (!resp.ok) throw new Error('Status HTTP ' + resp.status);
+      const job = await resp.json();
+
+      // Stall detection: if 90s have passed and we've never seen a real status,
+      // the background function likely crashed before writing anything.
+      const elapsed = Date.now() - startedAt;
+      if (!sawAnyStatus && job.status === 'pending' && elapsed > 90_000) {
+        $('errorBox').innerHTML = '<div class="error">Background function appears not to have started. Check Netlify dashboard → Logs → scheme-background. Common causes: missing ANTHROPIC_API_KEY, @netlify/blobs bundling issue, or background functions disabled on your plan.</div>';
+        $('goBtn').textContent = 'Try again';
+        $('goBtn').disabled = false;
+        setStatus('');
+        return;
+      }
+      if (job.status && job.status !== 'pending') sawAnyStatus = true;
+
+      if (job.message) setStatus(job.message);
+
+      if (Array.isArray(job.schemes) && job.schemes.length) {
+        state.schemes = job.schemes;
+        renderResults(state.schemes);
+      }
+
+      if (job.status === 'complete') {
+        setStatus('');
+        $('goBtn').textContent = 'Generate 3 new schemes';
+        $('goBtn').disabled = false;
+        return;
+      }
+      if (job.status === 'error') {
+        $('errorBox').innerHTML = '<div class="error">' + escapeHtml(job.error || 'Unknown error') + '</div>';
+        setStatus('');
+        $('goBtn').textContent = 'Try again';
+        $('goBtn').disabled = false;
+        return;
+      }
+    } catch (err) {
+      // Transient poll error - log but keep polling
+      console.warn('Poll error:', err.message);
+    }
+    pollTimer = setTimeout(tick, 2000);
+  };
+  tick();
+}
+
+// ---------- Rendering ----------
+
+function renderResults(schemes) {
+  const c = $('results');
+  c.innerHTML = '';
+  schemes.forEach((s, i) => c.appendChild(schemeCard(s, i)));
+}
+
+function schemeCard(s, i) {
+  const el = document.createElement('div');
+  el.className = 'scheme';
+
+  if (s.loading) {
+    el.innerHTML = `
+      <div class="img-wrap"><div class="spinner"></div></div>
+      <div class="body">
+        <h3 style="background: var(--bg-2); height: 20px; border-radius: 4px;"></h3>
+        <div class="concept" style="background: var(--bg-2); height: 40px; border-radius: 4px;"></div>
+      </div>`;
+    return el;
+  }
+
+  const img = s.image
+    ? `<img src="${s.image}" alt="${escapeAttr(s.name)}">`
+    : s.imageError
+      ? `<div class="placeholder">⚠ ${escapeHtml(s.imageError.slice(0, 200))}</div>`
+      : `<div class="spinner"></div>`;
+
+  const swatches = (s.palette || []).map(p =>
+    `<div class="swatch" style="background:${escapeAttr(p.hex)}" data-label="${escapeAttr(p.part + ' · ' + p.hex)}"></div>`
+  ).join('');
+
+  const recipeRows = (s.recipe || []).map(r => `
+    <tr>
+      <td class="part">${escapeHtml(r.part || '')}</td>
+      <td>${escapeHtml(r.base || '—')}</td>
+      <td>${escapeHtml(r.shade || '—')}</td>
+      <td>${escapeHtml(r.layer || '—')}</td>
+      <td>${escapeHtml(r.edge_highlight || '—')}</td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div class="img-wrap">${img}</div>
+    <div class="body">
+      <h3>${escapeHtml(s.name || 'Scheme ' + (i+1))}</h3>
+      <div class="concept">${escapeHtml(s.concept || '')}</div>
+      <div class="palette">${swatches}</div>
+      <details class="recipe">
+        <summary>Full paint recipe</summary>
+        <table>
+          <thead>
+            <tr><th>Part</th><th>Base</th><th>Shade</th><th>Layer</th><th>Edge</th></tr>
+          </thead>
+          <tbody>${recipeRows}</tbody>
+        </table>
+      </details>
+      <div class="scheme-actions">
+        <button ${!s.image ? 'disabled' : ''} data-act="download" data-idx="${i}">⬇ Save image</button>
+        <button data-act="copy" data-idx="${i}">📋 Copy recipe</button>
+      </div>
+    </div>
+  `;
+
+  el.querySelectorAll('[data-act]').forEach(b => {
+    b.addEventListener('click', () => handleAction(b.dataset.act, Number(b.dataset.idx)));
+  });
+
+  return el;
+}
+
+function handleAction(act, idx) {
+  const s = state.schemes[idx];
+  if (!s) return;
+  if (act === 'download' && s.image) {
+    const a = document.createElement('a');
+    a.href = s.image;
+    a.download = `minischeme-${(s.name || 'scheme').replace(/\s+/g, '-').toLowerCase()}.png`;
+    a.click();
+  } else if (act === 'copy') {
+    const text = recipeAsText(s);
+    navigator.clipboard.writeText(text).then(() => {
+      // could show a toast, keep minimal
+    });
+  }
+}
+
+function recipeAsText(s) {
+  const lines = [];
+  lines.push(`${s.name}\n${s.concept}\n`);
+  (s.recipe || []).forEach(r => {
+    lines.push(`${r.part}:`);
+    if (r.base) lines.push(`  Base: ${r.base}`);
+    if (r.shade) lines.push(`  Shade: ${r.shade}`);
+    if (r.layer) lines.push(`  Layer: ${r.layer}`);
+    if (r.edge_highlight) lines.push(`  Edge: ${r.edge_highlight}`);
+    lines.push('');
+  });
+  return lines.join('\n');
+}
+
+// ---------- Utils ----------
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+</script>
+
+</body>
+</html>
