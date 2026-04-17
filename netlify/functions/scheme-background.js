@@ -64,10 +64,15 @@ async function renderSchemeWithResult(jobId, idx, scheme, engine, imageBase64, i
     await jobSet(jobId, { ...current, schemes, updatedAt: new Date().toISOString() });
   } catch (err) {
     console.error(`[scheme-background] render ${idx} failed:`, err.message);
+    const msg = err.message || String(err);
+    const isQuota = /\b429\b/.test(msg) || /quota/i.test(msg) || /rate limit/i.test(msg);
+    const friendly = isQuota
+      ? `Image engine is rate-limiting — you've likely hit the free-tier quota. Try again in a minute, switch engines, or upgrade the API plan.`
+      : msg;
     const current = await jobGet(jobId);
     if (!current) return;
     const schemes = current.schemes.slice();
-    schemes[idx] = { ...schemes[idx], imageError: err.message || String(err), imageLoading: false };
+    schemes[idx] = { ...schemes[idx], imageError: friendly, imageLoading: false };
     await jobSet(jobId, { ...current, schemes, updatedAt: new Date().toISOString() });
   }
 }
@@ -155,8 +160,14 @@ exports.handler = async (event) => {
       schemes: initialSchemes
     });
 
+    // Stagger renders to avoid image-engine per-minute quotas. Gemini free tier
+    // throttles aggressively if we fire 3 image generations simultaneously.
+    // First one starts immediately, then 30s gap between each subsequent one.
+    // The user still sees the first preview fast, and the rest trickle in.
+    const STAGGER_MS = 30_000;
     await Promise.all(initialSchemes.map((scheme, idx) =>
-      renderSchemeWithResult(jobId, idx, scheme, chosenEngine, imageBase64, imageMediaType)
+      new Promise(resolve => setTimeout(resolve, idx * STAGGER_MS))
+        .then(() => renderSchemeWithResult(jobId, idx, scheme, chosenEngine, imageBase64, imageMediaType))
     ));
 
     console.log('[scheme-background] all renders complete');

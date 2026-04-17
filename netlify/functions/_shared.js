@@ -218,11 +218,35 @@ async function renderOpenAI({ imageBase64, imageMediaType, prompt }) {
 
 const ENGINES = { gemini: renderGemini, replicate: renderReplicate, openai: renderOpenAI };
 
+// Detects rate-limit errors from any of the three engines. httpsJson throws
+// Error objects whose message starts with "HTTP 429" for Gemini/OpenAI, and
+// Replicate surfaces 429 in its own prediction payload.
+function is429(err) {
+  const msg = String(err?.message || err || '');
+  return /\b429\b/.test(msg) || /rate limit/i.test(msg) || /quota/i.test(msg);
+}
+
 async function renderWithEngine(engineName, { imageBase64, imageMediaType, prompt }) {
   const adapter = ENGINES[engineName];
   if (!adapter) throw new Error(`Unknown engine "${engineName}". Options: ${Object.keys(ENGINES).join(', ')}`);
   const fullPrompt = `Repaint this tabletop miniature to look like a finished painted model with water-based acrylics. IMPORTANT: Keep the exact pose, sculpt, silhouette, and base shape. Do not add or remove any parts. Apply painted appearance with smooth base colours, visible shading pooling in the recesses, and crisp edge highlights on raised details. Matte finish. Preserve fine details like filigree, feathers, chainmail, and text.\n\nColour scheme:\n${prompt}`;
-  return adapter({ imageBase64, imageMediaType, prompt: fullPrompt });
+
+  // Exponential backoff on rate limits: wait 45s, then 90s, then fail.
+  // Total worst-case retry budget is ~2.5 min which still fits comfortably
+  // in the 15-min background function window.
+  const waits = [45_000, 90_000];
+  let lastErr;
+  for (let attempt = 0; attempt <= waits.length; attempt++) {
+    try {
+      return await adapter({ imageBase64, imageMediaType, prompt: fullPrompt });
+    } catch (err) {
+      lastErr = err;
+      if (!is429(err) || attempt === waits.length) throw err;
+      console.log(`[renderWithEngine] 429 on ${engineName}, retrying in ${waits[attempt]/1000}s (attempt ${attempt + 1})`);
+      await new Promise(r => setTimeout(r, waits[attempt]));
+    }
+  }
+  throw lastErr;
 }
 
 // ---------- Upstash Redis (HTTP REST API) ----------
