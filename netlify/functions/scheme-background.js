@@ -1,17 +1,16 @@
 // netlify/functions/scheme-background.js
 // Background function (15 min budget). Generates 3 schemes with Claude, then
-// renders all 3 images in parallel. Writes status updates to Netlify Blobs
+// renders all 3 images in parallel. Writes status updates to Upstash Redis
 // so the frontend can poll for progress.
 
-let getStore;
-let blobsLoadError = null;
-try {
-  ({ getStore } = require('@netlify/blobs'));
-} catch (err) {
-  blobsLoadError = err.message || String(err);
-  console.error('[scheme-background] @netlify/blobs failed to load:', blobsLoadError);
-}
-const { anthropicStream, renderWithEngine } = require('./_shared.js');
+const {
+  anthropicStream,
+  renderWithEngine,
+  upstashConfigured,
+  jobSet,
+  jobGet,
+  jobUpdate
+} = require('./_shared.js');
 
 const SYSTEM = `You are a Warhammer/tabletop miniature painting expert generating paint scheme recommendations.
 
@@ -49,14 +48,7 @@ PAINT NAMES: use real Citadel (GW) paint names. If the hobbyist mentions Vallejo
 
 Palette should cover 4-7 main visible parts. Recipe should have one entry per major part. Always return exactly 3 schemes.`;
 
-async function updateJob(store, jobId, patch) {
-  const current = (await store.get(jobId, { type: 'json', consistency: 'strong' })) || {};
-  const next = { ...current, ...patch, updatedAt: new Date().toISOString() };
-  await store.setJSON(jobId, next);
-  return next;
-}
-
-async function renderSchemeToBlob(store, jobId, idx, scheme, engine, imageBase64, imageMediaType) {
+async function renderSchemeWithResult(jobId, idx, scheme, engine, imageBase64, imageMediaType) {
   try {
     const out = await renderWithEngine(engine, {
       imageBase64,
@@ -64,27 +56,29 @@ async function renderSchemeToBlob(store, jobId, idx, scheme, engine, imageBase64
       prompt: scheme.edit_prompt
     });
 
-    // Read, update, write back — atomic enough for our purposes (only this background
-    // function writes to this key while it's running).
-    const current = await store.get(jobId, { type: 'json', consistency: 'strong' });
+    // Read current job, patch this scheme, write back.
+    const current = await jobGet(jobId);
     if (!current) return;
     const schemes = current.schemes.slice();
     schemes[idx] = { ...schemes[idx], image: `data:${out.mediaType};base64,${out.base64}`, imageLoading: false };
-    await store.setJSON(jobId, { ...current, schemes, updatedAt: new Date().toISOString() });
+    await jobSet(jobId, { ...current, schemes, updatedAt: new Date().toISOString() });
   } catch (err) {
-    const current = await store.get(jobId, { type: 'json', consistency: 'strong' });
+    console.error(`[scheme-background] render ${idx} failed:`, err.message);
+    const current = await jobGet(jobId);
     if (!current) return;
     const schemes = current.schemes.slice();
     schemes[idx] = { ...schemes[idx], imageError: err.message || String(err), imageLoading: false };
-    await store.setJSON(jobId, { ...current, schemes, updatedAt: new Date().toISOString() });
+    await jobSet(jobId, { ...current, schemes, updatedAt: new Date().toISOString() });
   }
 }
 
 exports.handler = async (event) => {
-  // Background functions return 202 immediately regardless of what we return here.
-  // All observable output goes through Blobs, and we log liberally so crashes show
-  // up in Netlify function logs.
   console.log('[scheme-background] invoked');
+
+  if (!upstashConfigured()) {
+    console.error('[scheme-background] Upstash env vars not set');
+    return { statusCode: 500 };
+  }
 
   let body;
   try {
@@ -96,34 +90,23 @@ exports.handler = async (event) => {
 
   const { jobId, imageBase64, imageMediaType, brief, engine } = body;
   if (!jobId || !imageBase64 || !imageMediaType) {
-    console.error('[scheme-background] missing fields', { hasJobId: !!jobId, hasImage: !!imageBase64, hasType: !!imageMediaType });
+    console.error('[scheme-background] missing fields');
     return { statusCode: 400 };
   }
 
-  console.log('[scheme-background] jobId', jobId, 'engine', engine, 'briefLen', (brief || '').length, 'imgLen', imageBase64.length);
+  console.log('[scheme-background] jobId', jobId, 'engine', engine, 'imgLen', imageBase64.length);
 
-  // Try to get the store. If this fails (env misconfigured, package not bundled),
-  // we can't report an error via Blobs — all we can do is log and bail.
-  let store;
   try {
-    store = getStore({ name: 'minischeme-jobs', consistency: 'strong' });
-  } catch (err) {
-    console.error('[scheme-background] failed to initialise Blobs store', err);
-    return { statusCode: 500 };
-  }
-
-  // Write an initial placeholder immediately so the poller sees SOMETHING
-  try {
-    await store.setJSON(jobId, {
+    await jobSet(jobId, {
       status: 'generating_schemes',
       message: 'Analysing your miniature and generating 3 schemes…',
       schemes: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
-    console.log('[scheme-background] initial status written to Blobs');
+    console.log('[scheme-background] initial status written to Upstash');
   } catch (err) {
-    console.error('[scheme-background] could not write initial status to Blobs', err);
+    console.error('[scheme-background] could not write to Upstash:', err.message);
     return { statusCode: 500 };
   }
 
@@ -151,39 +134,36 @@ exports.handler = async (event) => {
       parsed = JSON.parse(cleaned);
     } catch (e) {
       console.error('[scheme-background] Claude returned non-JSON', cleaned.slice(0, 300));
-      await updateJob(store, jobId, { status: 'error', error: 'Claude returned non-JSON: ' + cleaned.slice(0, 500) });
+      await jobUpdate(jobId, { status: 'error', error: 'Claude returned non-JSON: ' + cleaned.slice(0, 500) });
       return { statusCode: 200 };
     }
 
     if (!parsed.schemes || !Array.isArray(parsed.schemes) || parsed.schemes.length === 0) {
-      console.error('[scheme-background] no schemes in response');
-      await updateJob(store, jobId, { status: 'error', error: 'No schemes in Claude response' });
+      await jobUpdate(jobId, { status: 'error', error: 'No schemes in Claude response' });
       return { statusCode: 200 };
     }
 
     console.log('[scheme-background] got', parsed.schemes.length, 'schemes, starting image renders');
 
-    // Initialise schemes with placeholders for images
     const initialSchemes = parsed.schemes.map(s => ({ ...s, image: null, imageLoading: true, imageError: null }));
-    await updateJob(store, jobId, {
+    const chosenEngine = (engine || process.env.IMAGE_ENGINE || 'gemini').toLowerCase();
+
+    await jobUpdate(jobId, {
       status: 'rendering_images',
-      message: `Painting ${initialSchemes.length} previews with ${engine}…`,
+      message: `Painting ${initialSchemes.length} previews with ${chosenEngine}…`,
       model_description: parsed.model_description || '',
       schemes: initialSchemes
     });
 
-    // Render all images in parallel, each writes its own result
-    const chosenEngine = (engine || process.env.IMAGE_ENGINE || 'gemini').toLowerCase();
     await Promise.all(initialSchemes.map((scheme, idx) =>
-      renderSchemeToBlob(store, jobId, idx, scheme, chosenEngine, imageBase64, imageMediaType)
+      renderSchemeWithResult(jobId, idx, scheme, chosenEngine, imageBase64, imageMediaType)
     ));
 
     console.log('[scheme-background] all renders complete');
 
-    // Mark complete
-    const final = await store.get(jobId, { type: 'json', consistency: 'strong' });
+    const final = await jobGet(jobId);
     const allFailed = final.schemes.every(s => s.imageError);
-    await updateJob(store, jobId, {
+    await jobUpdate(jobId, {
       status: allFailed ? 'error' : 'complete',
       message: allFailed ? 'All image renders failed' : 'Done',
       error: allFailed ? final.schemes.map(s => s.imageError).filter(Boolean).join(' | ') : null
@@ -194,9 +174,9 @@ exports.handler = async (event) => {
   } catch (err) {
     console.error('[scheme-background] handler error', err);
     try {
-      await updateJob(store, jobId, { status: 'error', error: err.message || String(err) });
+      await jobUpdate(jobId, { status: 'error', error: err.message || String(err) });
     } catch (e2) {
-      console.error('[scheme-background] could not even write error to Blobs', e2);
+      console.error('[scheme-background] could not even write error', e2);
     }
     return { statusCode: 200 };
   }

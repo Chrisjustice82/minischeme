@@ -1,29 +1,21 @@
 // netlify/functions/job-status.js
-// Fast synchronous function. Returns the current state of a job from Blobs.
+// Fast synchronous function. Returns the current state of a job from Upstash.
 // Called by the browser on a 2s interval until status is 'complete' or 'error'.
 
-// Defensive require so the whole function doesn't crash if @netlify/blobs
-// failed to install. Returns a clean JSON error instead of 500-with-no-body.
-let getStore;
-let blobsLoadError = null;
-try {
-  ({ getStore } = require('@netlify/blobs'));
-} catch (err) {
-  blobsLoadError = err.message || String(err);
-}
+const { upstashConfigured, jobGet } = require('./_shared.js');
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'GET') {
     return { statusCode: 405, body: 'Method not allowed' };
   }
 
-  if (blobsLoadError) {
+  if (!upstashConfigured()) {
     return {
       statusCode: 500,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         status: 'error',
-        error: '@netlify/blobs module failed to load: ' + blobsLoadError + '. Check that package.json is at the repo root and that Netlify ran npm install (connect a Git repo rather than drag-and-drop deploying).'
+        error: 'Upstash env vars not set. Add UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in Site settings → Environment variables, then redeploy.'
       })
     };
   }
@@ -34,9 +26,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const store = getStore({ name: 'minischeme-jobs', consistency: 'strong' });
-    const job = await store.get(jobId, { type: 'json' });
-
+    const job = await jobGet(jobId);
     if (!job) {
       return {
         statusCode: 200,
@@ -44,7 +34,6 @@ exports.handler = async (event) => {
         body: JSON.stringify({ status: 'pending', message: 'Waiting for job to start…' })
       };
     }
-
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },

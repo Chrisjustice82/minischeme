@@ -225,4 +225,77 @@ async function renderWithEngine(engineName, { imageBase64, imageMediaType, promp
   return adapter({ imageBase64, imageMediaType, prompt: fullPrompt });
 }
 
-module.exports = { anthropicStream, renderWithEngine };
+// ---------- Upstash Redis (HTTP REST API) ----------
+//
+// We store job state as a JSON blob under a single key per job, with a TTL
+// of 1 hour so Upstash stays tidy without needing manual cleanup.
+//
+// Env vars required:
+//   UPSTASH_REDIS_REST_URL   e.g. https://apt-kid-12345.upstash.io
+//   UPSTASH_REDIS_REST_TOKEN the REST API token from Upstash dashboard
+
+const JOB_TTL_SECONDS = 60 * 60; // 1 hour
+
+function upstashConfigured() {
+  return !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
+}
+
+async function upstashCommand(args, timeoutMs = 15_000) {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) throw new Error('Upstash env vars not set (UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN)');
+
+  // Upstash REST accepts a JSON array of command + args as the POST body
+  const body = Buffer.from(JSON.stringify(args));
+  const parsed = new URL(url);
+  const res = await httpsJson({
+    method: 'POST',
+    hostname: parsed.hostname,
+    path: parsed.pathname === '/' ? '/' : parsed.pathname,
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      'Content-Length': body.length
+    },
+    body,
+    timeoutMs
+  });
+  if (res.json && res.json.error) throw new Error('Upstash error: ' + res.json.error);
+  return res.json?.result;
+}
+
+async function jobSet(jobId, value) {
+  // SET <key> <value> EX <ttl>
+  return upstashCommand(['SET', `job:${jobId}`, JSON.stringify(value), 'EX', String(JOB_TTL_SECONDS)]);
+}
+
+async function jobGet(jobId) {
+  const raw = await upstashCommand(['GET', `job:${jobId}`]);
+  if (raw === null || raw === undefined) return null;
+  try {
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (e) {
+    throw new Error('Stored job is not valid JSON: ' + String(raw).slice(0, 200));
+  }
+}
+
+async function jobUpdate(jobId, patch) {
+  const current = (await jobGet(jobId)) || {};
+  const next = { ...current, ...patch, updatedAt: new Date().toISOString() };
+  await jobSet(jobId, next);
+  return next;
+}
+
+async function upstashPing() {
+  return upstashCommand(['PING']);
+}
+
+module.exports = {
+  anthropicStream,
+  renderWithEngine,
+  upstashConfigured,
+  upstashPing,
+  jobSet,
+  jobGet,
+  jobUpdate
+};
