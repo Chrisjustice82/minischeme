@@ -52,6 +52,10 @@
 
   /* Upload zone */
   .upload {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
     border: 2px dashed var(--border);
     border-radius: var(--radius);
     padding: 24px;
@@ -59,9 +63,21 @@
     cursor: pointer;
     transition: all 0.15s;
     background: rgba(255,255,255,0.02);
+    position: relative;
   }
   .upload:hover, .upload.drag { border-color: var(--accent); background: rgba(106,166,255,0.08); }
-  .upload input { display: none; }
+  .upload input {
+    /* visually hide but keep accessible; some mobile browsers render
+       display:none inputs unreliably, this is the bulletproof form */
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+    opacity: 0;
+  }
   .upload .icon { font-size: 32px; margin-bottom: 8px; }
   .upload .hint { color: var(--ink-dim); font-size: 13px; margin-top: 4px; }
 
@@ -198,7 +214,7 @@
   <div class="card">
     <div class="section-title">1. Your miniature</div>
     <label class="upload" id="uploadZone">
-      <input type="file" id="fileInput" accept="image/*" capture="environment">
+      <input type="file" id="fileInput" accept="image/*">
       <div class="icon">📷</div>
       <div><strong>Tap to take a photo or upload</strong></div>
       <div class="hint">JPG, PNG or WEBP. Plain background works best.</div>
